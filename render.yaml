@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: audioly
+    runtime: node
+    buildCommand: npx expo export --platform web --output-dir dist/web && mkdir -p dist/web/builds && cp -r dist/web public 2>/dev/null; true
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+    healthCheckPath: /health
+    autoDeploy: true
