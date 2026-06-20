@@ -1,0 +1,34 @@
+node_modules/
+.expo/
+dist/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+public/builds/*.apk
+public/builds/*.ipa
+public/builds/*.aab
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android local build
+android/
+ios/
+
+# Logs
+*.log
+npm-debug.log*
