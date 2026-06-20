@@ -1,7 +1,3 @@
-// Bismillah Ar-Rahman Ar-Roheem
-// Audioly - Production server for PaaS deployment
-// Serves web app + mobile build downloads with cleanup of old builds
-
 const express = require("express");
 const compression = require("compression");
 const path = require("path");
@@ -9,69 +5,62 @@ const fs = require("fs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BUILDS_DIR = path.join(__dirname, "public", "builds");
-const WEB_DIR = path.join(__dirname, "public");
+const WEB_DIR = path.join(__dirname, "dist");
+const ARTIFACT_DIRS = [
+  path.join(__dirname, "dist", "builds"),
+  path.join(__dirname, "artifacts"),
+  path.join(__dirname, "android", "app", "build", "outputs", "apk", "release"),
+  path.join(__dirname, "android", "app", "build", "outputs", "apk", "debug"),
+];
 
 app.use(compression());
-
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
-  next();
-});
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
 app.get("/api/builds", (_req, res) => {
-  if (!fs.existsSync(BUILDS_DIR)) {
-    return res.json({ builds: [] });
-  }
-
-  const files = fs.readdirSync(BUILDS_DIR)
-    .filter((f) => /\.(apk|ipa|aab)$/i.test(f))
-    .map((f) => {
-      const stat = fs.statSync(path.join(BUILDS_DIR, f));
-      return {
+  const builds = [];
+  for (const dir of ARTIFACT_DIRS) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!/\.(apk|ipa|aab)$/i.test(f)) continue;
+      const filePath = path.join(dir, f);
+      const stat = fs.statSync(filePath);
+      builds.push({
         name: f,
         size: stat.size,
         sizeFormatted: formatBytes(stat.size),
-        createdAt: stat.birthtime.toISOString(),
+        createdAt: stat.mtime.toISOString(),
         downloadUrl: `/builds/${f}`,
         platform: f.endsWith(".apk") ? "android" : f.endsWith(".ipa") ? "ios" : "android",
-      };
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  cleanupOldBuilds(files);
-  res.json({ builds: files });
+        dir,
+      });
+    }
+  }
+  builds.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  cleanupOldBuilds(builds);
+  res.json({ builds: builds.map(({ dir, ...b }) => b) });
 });
 
-app.use("/builds", (req, res, next) => {
-  const buildsDir = BUILDS_DIR;
-  if (!fs.existsSync(buildsDir)) {
-    return res.status(404).json({ error: "No builds available" });
-  }
-  express.static(buildsDir, {
-    maxAge: "1h",
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith(".apk")) {
+app.get("/builds/:filename", (req, res) => {
+  for (const dir of ARTIFACT_DIRS) {
+    const filePath = path.join(dir, req.params.filename);
+    if (fs.existsSync(filePath)) {
+      if (req.params.filename.endsWith(".apk")) {
         res.setHeader("Content-Type", "application/vnd.android.package-archive");
-        res.setHeader("Content-Disposition", `attachment; filename="${path.basename(filePath)}"`);
+        res.setHeader("Content-Disposition", `attachment; filename="${req.params.filename}"`);
       }
-    },
-  })(req, res, next);
+      return res.sendFile(filePath);
+    }
+  }
+  res.status(404).json({ error: "Build not found" });
 });
 
 app.use(express.static(WEB_DIR, {
   maxAge: "1y",
-  immutable: true,
   setHeaders: (res, filePath) => {
-    if (filePath.endsWith(".html")) {
-      res.setHeader("Cache-Control", "no-cache");
-    }
+    if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache");
   },
 }));
 
@@ -81,23 +70,16 @@ app.get("*", (_req, res) => {
 
 function cleanupOldBuilds(builds) {
   const byPlatform = {};
-  for (const build of builds) {
-    if (!byPlatform[build.platform]) byPlatform[build.platform] = [];
-    byPlatform[build.platform].push(build);
+  for (const b of builds) {
+    if (!byPlatform[b.platform]) byPlatform[b.platform] = [];
+    byPlatform[b.platform].push(b);
   }
-
   for (const platform of Object.keys(byPlatform)) {
-    const platformBuilds = byPlatform[platform].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-
-    const toKeep = platformBuilds.slice(0, 1);
-    const toDelete = platformBuilds.slice(1);
-
-    for (const old of toDelete) {
-      const filePath = path.join(BUILDS_DIR, old.name);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+    const sorted = byPlatform[platform].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    for (const old of sorted.slice(1)) {
+      const fp = path.join(old.dir, old.name);
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
         console.log(`[cleanup] Removed old ${platform} build: ${old.name}`);
       }
     }
@@ -113,10 +95,5 @@ function formatBytes(bytes) {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[Audioly] Server running on port ${PORT}`);
-  console.log(`[Audioly] Serving web app from ${WEB_DIR}`);
-  if (fs.existsSync(BUILDS_DIR)) {
-    const builds = fs.readdirSync(BUILDS_DIR);
-    console.log(`[Audioly] ${builds.length} build(s) available for download`);
-  }
+  console.log(`[Audioly] Server on port ${PORT}, serving ${WEB_DIR}`);
 });
